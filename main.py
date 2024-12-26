@@ -3,28 +3,24 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
 )
 from telegram.ext import (
-    CommandHandler, CallbackQueryHandler, CallbackContext, Application,
-    ContextTypes, MessageHandler, filters
+    CommandHandler, CallbackQueryHandler, Application,
+    ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
 )
 import logging
-from datetime import datetime
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from formula import ShortTermPredictor
 
-# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-TOKEN: Final = "7851729618:AAFs1mI8oaqql-3bekE4BJEHxE8AJ6_F2-c"
-BOT_USERNAME: Final = "@signal_trading_test_bot"
-PAYMENT_PROVIDER_TOKEN: Final = "YOUR_PAYMENT_PROVIDER_TOKEN"
+TOKEN: Final = "7464820680:AAHeYmWzf88-7KDs8BiJF8liG6sQDeN31Zc"
+BOT_USERNAME: Final = "@signal_trading_ai_bot"
 
-# Store active predictions, user states, and subscription statuses
 active_predictions: Dict[int, Dict] = {}
 user_choices: Dict[int, Dict] = {}
 user_subscription_status: Dict[int, bool] = {}
@@ -34,20 +30,14 @@ class PredictionManager:
         self.thread_pool = ThreadPoolExecutor(max_workers=4)
 
     async def run_prediction(self, crypto: str, minutes: int) -> tuple:
-        """Run prediction in a separate thread to avoid blocking."""
         try:
             predictor = ShortTermPredictor(crypto, minutes)
-
-            # Run the CPU-intensive operations in a thread pool
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(self.thread_pool, predictor.train_model)
-
-            # Get prediction
             prediction_result = await loop.run_in_executor(
                 self.thread_pool,
                 predictor.predict_next_movement
             )
-
             return prediction_result
         except Exception as e:
             logger.error(f"Prediction error for {crypto}: {str(e)}")
@@ -55,26 +45,50 @@ class PredictionManager:
 
 prediction_manager = PredictionManager()
 
+free_usage: Dict[int, bool] = {}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start command with subscription check."""
-    user_id = update.effective_user.id
-
-    # Check subscription status
-    if user_id not in user_subscription_status:
-        user_subscription_status[user_id] = False  # Default to not subscribed
-
-    if user_subscription_status[user_id]:
-        await send_crypto_options(update)
-    else:
+    user_id = update.message.from_user.id
+    if user_id in free_usage:
+        keyboard = [
+            [InlineKeyboardButton("⭐ Subscribe - 250 Stars", callback_data="subscribe")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "🚀 Welcome to Crypto Signal Bot!\n\n"
-            "You can make one free prediction. After that, a subscription of 250 Telegram stars "
-            "is required to use the bot.\n\n"
-            "Type /subscribe to unlock full access."
+            "You have used your free trial.\n"
+            "Subscribe for 250 Stars to continue using the bot.",
+            reply_markup=reply_markup
         )
+    else:
+        free_usage[user_id] = True
+        await send_crypto_options(update)
+
+async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    prices = [LabeledPrice("Bot Subscription", 250)]  # 250 Stars
+    await context.bot.send_invoice(
+        chat_id=query.from_user.id,
+        title="Crypto Signal Bot Subscription",
+        description="Full access to predictions",
+        payload="{}",
+        provider_token="",
+        currency="XTR",  # Changed to STARS
+        prices=prices
+    )
+
+async def pre_checkout_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query: PreCheckoutQuery = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    free_usage[user_id] = False
+    await update.message.reply_text(
+        "⭐ Thank you for subscribing! You can now use the bot without restrictions."
+    )
 
 async def send_crypto_options(update: Update) -> None:
-    """Display cryptocurrency options."""
     keyboard = [
         [
             InlineKeyboardButton("₿ BTC-USD", callback_data="BTC-USD"),
@@ -91,53 +105,11 @@ async def send_crypto_options(update: Update) -> None:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Please select a cryptocurrency to begin:",
+        "🚀 Welcome to Crypto Signal Bot!\n\nI can help you predict short-term cryptocurrency price movements using machine learning.\n\nPlease select a cryptocurrency to begin:",
         reply_markup=reply_markup
     )
 
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Initiate subscription process."""
-    user_id = update.effective_user.id
-
-    if user_subscription_status.get(user_id, False):
-        await update.message.reply_text("✅ You are already subscribed!")
-        return
-
-    title = "Crypto Signal Bot Subscription"
-    description = "Get unlimited access to cryptocurrency predictions."
-    payload = f"subscription_{user_id}"
-    currency = "USD"
-    price = 250 * 100  # Telegram stars converted to minor units (e.g., cents)
-
-    prices = [LabeledPrice("Subscription", price)]
-
-    await context.bot.send_invoice(
-        chat_id=update.effective_chat.id,
-        title=title,
-        description=description,
-        payload=payload,
-        provider_token=PAYMENT_PROVIDER_TOKEN,
-        currency=currency,
-        prices=prices,
-        start_parameter="crypto_subscription"
-    )
-
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle pre-checkout queries."""
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
-
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle successful payments."""
-    user_id = update.effective_user.id
-    user_subscription_status[user_id] = True
-    await update.message.reply_text(
-        "🎉 Thank you for subscribing! You now have unlimited access to predictions.\n\n"
-        "Type /start to begin."
-    )
-
 async def crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle cryptocurrency selection."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -145,7 +117,7 @@ async def crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not user_subscription_status.get(user_id, False) and user_id in active_predictions:
         await query.edit_message_text(
             "❌ You have already used your free prediction.\n\n"
-            "Type /subscribe to unlock unlimited access."
+            "Type /subscribe to unlock unlimited access for 250 Stars."
         )
         return
 
@@ -166,7 +138,6 @@ async def crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle time range selection and manage prediction process."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -185,7 +156,6 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
-        # Run prediction asynchronously
         prediction, probabilities, current_price, current_time, confidence_level = (
             await prediction_manager.run_prediction(crypto, minutes_ahead)
         )
@@ -205,7 +175,6 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Type /start to make a new prediction"
         )
 
-        # Store prediction in active_predictions
         active_predictions[user_id] = {
             "crypto": crypto,
             "timestamp": current_time,
@@ -220,15 +189,14 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("❌ An error occurred. Please try again later.")
 
 def main() -> None:
-    """Initialize and start the bot."""
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CallbackQueryHandler(crypto_selection, pattern="^(BTC-USD|ETH-USD|SOL-USD|XRP-USD|DOGE-USD|DOT-USD)$"))
     app.add_handler(CallbackQueryHandler(time_selection, pattern="^(1|5|15)$"))
+    app.add_handler(CallbackQueryHandler(handle_subscription, pattern="^subscribe$"))
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_query_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    app.add_handler(MessageHandler(filters.PRE_CHECKOUT_QUERY, precheckout_callback))
 
     logger.info("🚀 Bot is starting...")
     app.run_polling()
