@@ -21,14 +21,6 @@ TOKEN: Final = "7464820680:AAHeYmWzf88-7KDs8BiJF8liG6sQDeN31Zc"
 BOT_USERNAME: Final = "@signal_trading_ai_bot"
 user_choices: Dict[int, Dict] = {}
 
-# Database configuration
-DB_CONFIG = {
-    'host': 'develosh.beget.tech',
-    'user': 'develosh_trading',
-    'password': 'S2h0E0r4',
-    'database': 'develosh_trading'
-}
-
 
 class DatabaseManager:
     def __init__(self):
@@ -40,7 +32,7 @@ class DatabaseManager:
         try:
             if self.conn is None or not self.conn.is_connected():
                 self.conn = mysql.connector.connect(
-                    host='develosh.beget.tech',
+                    host='localhost',
                     user='develosh_trading',
                     password='Shaha2001',
                     database='develosh_trading'
