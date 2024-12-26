@@ -4,3 +4,4 @@ scikit-learn
 imbalanced-learn
 pandas
 numpy
+mysql-connector-python
