@@ -1,7 +1,11 @@
-import json
 from typing import Final, Dict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CommandHandler, CallbackQueryHandler, CallbackContext, Application, ContextTypes
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
+)
+from telegram.ext import (
+    CommandHandler, CallbackQueryHandler, CallbackContext, Application,
+    ContextTypes, MessageHandler, filters
+)
 import logging
 from datetime import datetime
 import asyncio
@@ -18,13 +22,12 @@ logger = logging.getLogger(__name__)
 
 TOKEN: Final = "7851729618:AAFs1mI8oaqql-3bekE4BJEHxE8AJ6_F2-c"
 BOT_USERNAME: Final = "@signal_trading_test_bot"
+PAYMENT_PROVIDER_TOKEN: Final = "YOUR_PAYMENT_PROVIDER_TOKEN"
 
-# Store active predictions and user states
+# Store active predictions, user states, and subscription statuses
 active_predictions: Dict[int, Dict] = {}
 user_choices: Dict[int, Dict] = {}
-user_data: Dict[int, Dict] = {}
-
-
+user_subscription_status: Dict[int, bool] = {}
 
 class PredictionManager:
     def __init__(self):
@@ -50,70 +53,28 @@ class PredictionManager:
             logger.error(f"Prediction error for {crypto}: {str(e)}")
             raise
 
-class UserManager:
-    def __init__(self):
-        self.data_file = "user_data.json"
-        self.load_data()
-
-    def load_data(self):
-        try:
-            with open(self.data_file, 'r') as f:
-                global user_data
-                user_data = json.load(f)
-        except FileNotFoundError:
-            user_data = {}
-
-    def save_data(self):
-        with open(self.data_file, 'w') as f:
-            json.dump(user_data, f)
-
-    def check_subscription(self, user_id: int) -> bool:
-        user_info = user_data.get(str(user_id), {})
-        return user_info.get('subscribed', False)
-
-    def has_free_trial(self, user_id: int) -> bool:
-        user_info = user_data.get(str(user_id), {})
-        return not user_info.get('used_trial', False)
-
-    def use_free_trial(self, user_id: int):
-        if str(user_id) not in user_data:
-            user_data[str(user_id)] = {}
-        user_data[str(user_id)]['used_trial'] = True
-        user_data[str(user_id)]['subscribed'] = False
-        self.save_data()
-
-    def subscribe_user(self, user_id: int):
-        if str(user_id) not in user_data:
-            user_data[str(user_id)] = {}
-        user_data[str(user_id)]['subscribed'] = True
-        self.save_data()
-
-user_manager = UserManager()
 prediction_manager = PredictionManager()
-
-prediction_manager = PredictionManager()
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
+    """Start command with subscription check."""
+    user_id = update.effective_user.id
 
-    if not user_manager.check_subscription(user_id) and not user_manager.has_free_trial(user_id):
-        subscription_message = (
-            "🌟 Welcome to Crypto Signal Bot!\n\n"
-            "To use this bot, you need a subscription (250 Telegram Stars).\n"
-            "Please contact @admin to subscribe.\n\n"
-            "New users get one free prediction - would you like to use it now?"
-        )
-        keyboard = [[
-            InlineKeyboardButton("✨ Use Free Trial", callback_data="use_trial"),
-            InlineKeyboardButton("💫 Subscribe", callback_data="subscribe")
-        ]]
+    # Check subscription status
+    if user_id not in user_subscription_status:
+        user_subscription_status[user_id] = False  # Default to not subscribed
+
+    if user_subscription_status[user_id]:
+        await send_crypto_options(update)
+    else:
         await update.message.reply_text(
-            subscription_message,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "🚀 Welcome to Crypto Signal Bot!\n\n"
+            "You can make one free prediction. After that, a subscription of 250 Telegram stars "
+            "is required to use the bot.\n\n"
+            "Type /subscribe to unlock full access."
         )
-        return
 
+async def send_crypto_options(update: Update) -> None:
+    """Display cryptocurrency options."""
     keyboard = [
         [
             InlineKeyboardButton("₿ BTC-USD", callback_data="BTC-USD"),
@@ -129,51 +90,62 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    welcome_message = "🚀 Select a cryptocurrency to begin:"
-    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Please select a cryptocurrency to begin:",
+        reply_markup=reply_markup
+    )
 
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Initiate subscription process."""
+    user_id = update.effective_user.id
 
-async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
+    if user_subscription_status.get(user_id, False):
+        await update.message.reply_text("✅ You are already subscribed!")
+        return
 
-    if query.data == "use_trial":
-        user_manager.use_free_trial(user_id)
-        keyboard = [
-            [
-                InlineKeyboardButton("₿ BTC-USD", callback_data="BTC-USD"),
-                InlineKeyboardButton("Ξ ETH-USD", callback_data="ETH-USD")
-            ],
-            [
-                InlineKeyboardButton("◎ SOL-USD", callback_data="SOL-USD"),
-                InlineKeyboardButton("✧ XRP-USD", callback_data="XRP-USD")
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "✨ Free trial activated! Select a cryptocurrency:",
-            reply_markup=reply_markup
-        )
-    elif query.data == "subscribe":
-        await query.edit_message_text(
-            "💫 To subscribe:\n"
-            "1. You need 250 Telegram Stars\n"
-            "2. Contact @admin\n"
-            "3. Once confirmed, you'll get unlimited predictions!\n\n"
-            "Use /start to begin after subscribing."
-        )
+    title = "Crypto Signal Bot Subscription"
+    description = "Get unlimited access to cryptocurrency predictions."
+    payload = f"subscription_{user_id}"
+    currency = "USD"
+    price = 250 * 100  # Telegram stars converted to minor units (e.g., cents)
+
+    prices = [LabeledPrice("Subscription", price)]
+
+    await context.bot.send_invoice(
+        chat_id=update.effective_chat.id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token=PAYMENT_PROVIDER_TOKEN,
+        currency=currency,
+        prices=prices,
+        start_parameter="crypto_subscription"
+    )
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pre-checkout queries."""
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle successful payments."""
+    user_id = update.effective_user.id
+    user_subscription_status[user_id] = True
+    await update.message.reply_text(
+        "🎉 Thank you for subscribing! You now have unlimited access to predictions.\n\n"
+        "Type /start to begin."
+    )
 
 async def crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle cryptocurrency selection."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
-    if not user_manager.check_subscription(user_id) and not user_manager.has_free_trial(user_id):
+    if not user_subscription_status.get(user_id, False) and user_id in active_predictions:
         await query.edit_message_text(
-            "⭐ You need a subscription to continue.\n"
-            "Contact @admin to subscribe (250 Telegram Stars required).\n\n"
-            "Use /start to begin after subscribing."
+            "❌ You have already used your free prediction.\n\n"
+            "Type /subscribe to unlock unlimited access."
         )
         return
 
@@ -193,7 +165,6 @@ async def crypto_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reply_markup=reply_markup
     )
 
-
 async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle time range selection and manage prediction process."""
     query = update.callback_query
@@ -204,11 +175,10 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Session expired. Please start over with /start")
         return
 
-    user_choices[user_id]["time"] = int(query.data)
     crypto = user_choices[user_id]["crypto"]
-    minutes_ahead = user_choices[user_id]["time"]
+    minutes_ahead = int(query.data)
+    user_choices[user_id]["time"] = minutes_ahead
 
-    # Show loading message
     await query.edit_message_text(
         f"🔄 Analyzing {crypto} data...\n"
         "This may take a moment while I train the prediction model."
@@ -220,7 +190,6 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await prediction_manager.run_prediction(crypto, minutes_ahead)
         )
 
-        # Format prediction result
         direction = "⬆️ UP" if prediction == 1 else "⬇️ DOWN"
         probability = probabilities[1] * 100 if prediction == 1 else probabilities[0] * 100
         confidence_emoji = "🟢" if confidence_level == "High" else "🟡"
@@ -247,62 +216,22 @@ async def time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(result_message)
 
     except Exception as e:
-        error_message = (
-            "❌ Sorry, an error occurred while making the prediction.\n"
-            "This might be due to:\n"
-            "• Market data unavailability\n"               
-            "• Network connectivity issues\n"   
-            "• Rate limiting\n\n"
-            "Please try again later with /start"
-        )
-        logger.error(f"Prediction error for user {user_id}: {str(e)}")
-        await query.edit_message_text(error_message)
-
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle errors gracefully."""
-    logger.error(f"Update {update} caused error: {context.error}")
-    error_message = (
-        "❌ An unexpected error occurred.\n"
-        "Please try again with /start"
-    )
-
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(error_message)
-        elif update and update.callback_query:
-            await update.callback_query.edit_message_text(error_message)
-    except Exception as e:
-        logger.error(f"Error handler failed: {str(e)}")
-
+        logger.error(f"Prediction error: {str(e)}")
+        await query.edit_message_text("❌ An error occurred. Please try again later.")
 
 def main() -> None:
-    try:
-        app = Application.builder().token(TOKEN).build()
+    """Initialize and start the bot."""
+    app = Application.builder().token(TOKEN).build()
 
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(
-            handle_subscription,
-            pattern="^(use_trial|subscribe)$"
-        ))
-        app.add_handler(CallbackQueryHandler(
-            crypto_selection,
-            pattern="^(BTC-USD|ETH-USD|SOL-USD|XRP-USD|DOGE-USD|DOT-USD)$"
-        ))
-        app.add_handler(CallbackQueryHandler(
-            time_selection,
-            pattern="^(1|5|15)$"
-        ))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("subscribe", subscribe))
+    app.add_handler(CallbackQueryHandler(crypto_selection, pattern="^(BTC-USD|ETH-USD|SOL-USD|XRP-USD|DOGE-USD|DOT-USD)$"))
+    app.add_handler(CallbackQueryHandler(time_selection, pattern="^(1|5|15)$"))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(MessageHandler(filters.PRE_CHECKOUT_QUERY, precheckout_callback))
 
-        app.add_error_handler(error_handler)
-
-        logger.info("🚀 Bot is starting...")
-        app.run_polling()
-
-    except Exception as e:
-        logger.error(f"Failed to start bot: {str(e)}")
-        raise
-
+    logger.info("🚀 Bot is starting...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
