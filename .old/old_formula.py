@@ -127,7 +127,7 @@ class ShortTermPredictor:
         try:
             # Download historical data with more history
             end = datetime.now()
-            start = end - timedelta(days=1)  # Increased from 1 to 7 days
+            start = end - timedelta(days=30)  # Increased from 1 to 7 days
             df = yf.download(self.symbol, start=start, end=end, interval=f'{self.minutes}m')
             logging.info(f"Downloaded {len(df)} rows of data for {self.symbol}")
 
